@@ -4,9 +4,10 @@ Research Question: Can machine learning models trained on 35-year CHIRPS histori
 
 Rationale: The World Meteorological Organization (WMO) specifies that 30 years of precipitation data is essential for climatological research (Hasan et al., 2025). Your CHIRPS dataset perfectly meets this requirement.
 
-Novelty: While many studies validate CHIRPS against gauge data (Kavwenje et al., 2025; Aniley et al., 2023), few use the full 35-year record for predictive modelling of future rainfall.,"(mm) Precipitation (CHIRPS) at Western area of Sierra Leone, 1991-01-01 to 2025-12-31"
+Novelty: While many studies validate CHIRPS against gauge data (Kavwenje et al., 2025; Aniley et al., 2023), few use the full 35-year record for predictive modelling of future rainfall.
 
 Dataset
+(mm) Precipitation (CHIRPS) at Western area of Sierra Leone, 1991-01-01 to 2025-12-31
 
 "1991-01-01",0
 "1991-01-02",0
