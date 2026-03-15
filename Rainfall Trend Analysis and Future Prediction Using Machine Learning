@@ -1,0 +1,890 @@
+# ============================================================================
+# TITLE: Three-And-Half-Decade Rainfall Trend Analysis and Future Prediction 
+# Using Machine Learning: A CHIRPS-Based Study for Sierra Leone
+# 
+# STUDY AREA: Western Area, Sierra Leone (Freetown)
+# DATA SOURCE: CHIRPS v3.14.3 (12,785 rows × 2 columns, 1991-2025)
+# PYTHON VERSION: 3.9+ (compatible with 3.14.3)
+# ENVIRONMENT: Jupyter Notebook / VS Code
+# ============================================================================
+
+# %% ============================================================================
+# CELL 1: IMPORT LIBRARIES AND DEPENDENCIES
+# ============================================================================
+
+import os
+import sys
+import warnings
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from datetime import datetime, timedelta
+import geopandas as gpd
+from pathlib import Path
+from scipy import stats
+
+# Scikit-learn imports
+from sklearn.preprocessing import StandardScaler, PolynomialFeatures
+from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error, mean_absolute_percentage_error
+
+# Suppress warnings
+warnings.filterwarnings('ignore')
+
+# Configure visualization
+plt.style.use('seaborn-v0_8-darkgrid')
+sns.set_palette("husl")
+
+print("=" * 100)
+print("RAINFALL TREND ANALYSIS AND FORECASTING SYSTEM - CHIRPS DATA")
+print("Three-And-Half-Decade Study: Sierra Leone (Western Area, Freetown)")
+print(f"Execution Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+print("=" * 100)
+
+# %% ============================================================================
+# CELL 2: CONFIGURATION AND PATH SETUP
+# ============================================================================
+
+# Define paths
+DATA_PATH = r"C:\Users\User\Desktop\Rainfall\Three-Decade Rainfall\West"
+CSV_FILE = "Freetown.csv"
+SHAPEFILE = "Freetown.shp"
+
+CSV_PATH = os.path.join(DATA_PATH, CSV_FILE)
+SHAPEFILE_PATH = os.path.join(DATA_PATH, SHAPEFILE)
+
+# Output directory
+OUTPUT_DIR = os.path.join(DATA_PATH, "Analysis_Results")
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+FIG_DIR = os.path.join(OUTPUT_DIR, "Figures")
+os.makedirs(FIG_DIR, exist_ok=True)
+
+# Configuration parameters
+START_YEAR = 1991
+END_YEAR = 2025
+FORECAST_START = 2026
+FORECAST_END = 2050
+RAINY_SEASON_MONTHS = [5, 6, 7, 8, 9, 10]
+DRY_SEASON_MONTHS = [11, 12, 1, 2, 3, 4]
+
+print(f"\n✓ Configuration Loaded:")
+print(f"  Data Path: {DATA_PATH}")
+print(f"  Output Directory: {OUTPUT_DIR}")
+print(f"  Historical Period: {START_YEAR}-{END_YEAR}")
+print(f"  Forecast Period: {FORECAST_START}-{FORECAST_END}")
+
+# %% ============================================================================
+# CELL 3: LOAD AND VALIDATE DATASET
+# ============================================================================
+
+print("\n[STEP 1] LOADING CHIRPS RAINFALL DATA...")
+print("-" * 100)
+
+try:
+    if not os.path.exists(CSV_PATH):
+        raise FileNotFoundError(f"File not found: {CSV_PATH}")
+    
+    df_raw = pd.read_csv(CSV_PATH)
+    print(f"✓ Successfully loaded: {CSV_FILE}")
+    print(f"  Dataset Shape: {df_raw.shape[0]:,} rows × {df_raw.shape[1]} columns")
+    print(f"  File Size: {os.path.getsize(CSV_PATH) / (1024*1024):.2f} MB")
+    
+except FileNotFoundError as e:
+    print(f"✗ ERROR: {e}")
+    sys.exit(1)
+
+print("\n[DATASET PREVIEW - FIRST 15 ROWS]")
+print(df_raw.head(15).to_string())
+
+print("\n[DATASET PREVIEW - LAST 15 ROWS]")
+print(df_raw.tail(15).to_string())
+
+print("\n[DATASET INFORMATION]")
+print(f"  Columns: {list(df_raw.columns)}")
+print(f"  Data Types:\n{df_raw.dtypes}")
+print(f"\n  Statistics:\n{df_raw.describe().to_string()}")
+
+print("\n[MISSING VALUES CHECK]")
+missing = df_raw.isnull().sum()
+print(f"  Missing Values:\n{missing}")
+
+# %% ============================================================================
+# CELL 4: DATA PREPARATION AND CLEANING
+# ============================================================================
+
+print("\n[STEP 2] DATA PREPARATION AND CLEANING...")
+print("-" * 100)
+
+df = df_raw.copy()
+
+# Rename columns
+col_names = list(df.columns)
+df.rename(columns={
+    col_names[0]: 'Date',
+    col_names[1]: 'Precipitation_mm'
+}, inplace=True)
+
+# Convert date column
+df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+df['Year'] = df['Date'].dt.year
+df['Month'] = df['Date'].dt.month
+df['Day'] = df['Date'].dt.day
+
+# Convert precipitation to numeric
+df['Precipitation_mm'] = pd.to_numeric(df['Precipitation_mm'], errors='coerce')
+
+# Remove NaN values
+df = df.dropna()
+df = df.sort_values('Date').reset_index(drop=True)
+
+print(f"✓ Data preparation completed")
+print(f"  Cleaned Shape: {df.shape[0]:,} rows × {df.shape[1]} columns")
+print(f"  Year Range: {df['Year'].min()} to {df['Year'].max()}")
+print(f"  Month Range: {df['Month'].min()} to {df['Month'].max()}")
+
+print("\n[CLEANED DATASET SAMPLE]")
+print(df.head(15).to_string())
+
+# %% ============================================================================
+# CELL 5: SEASONAL CLASSIFICATION
+# ============================================================================
+
+print("\n[STEP 3] SEASONAL CLASSIFICATION...")
+print("-" * 100)
+
+def assign_season(month):
+    """Assign season based on month"""
+    return 'Rainy Season' if month in RAINY_SEASON_MONTHS else 'Dry Season'
+
+df['Season'] = df['Month'].apply(assign_season)
+
+print(f"✓ Seasons assigned")
+season_counts = df['Season'].value_counts().sort_index()
+print(f"\nSeason Distribution:")
+print(season_counts)
+print(f"\nSeason Percentages:")
+print((season_counts / len(df) * 100).round(2))
+
+# %% ============================================================================
+# CELL 6: HISTORICAL ANALYSIS (1991-2025)
+# ============================================================================
+
+print("\n[STEP 4] HISTORICAL ANALYSIS (1991-2025)...")
+print("-" * 100)
+
+df_historical = df[(df['Year'] >= START_YEAR) & (df['Year'] <= END_YEAR)].copy()
+print(f"✓ Historical dataset: {len(df_historical):,} records ({START_YEAR}-{END_YEAR})")
+
+# ========================================
+# TABLE 1: ANNUAL RAINFALL TOTALS
+# ========================================
+print("\n" + "=" * 100)
+print("TABLE 1: ANNUAL RAINFALL TOTALS (1991-2025)")
+print("=" * 100)
+
+annual_totals = df_historical.groupby('Year').agg({
+    'Precipitation_mm': ['sum', 'mean', 'std', 'min', 'max', 'count']
+}).round(2)
+
+annual_totals.columns = ['Annual_Total_mm', 'Daily_Mean_mm', 'Std_mm', 'Min_Daily_mm', 'Max_Daily_mm', 'Days']
+annual_totals = annual_totals.reset_index()
+
+print(annual_totals.to_string(index=False))
+annual_totals.to_csv(os.path.join(OUTPUT_DIR, '01_Annual_Rainfall_Totals.csv'), index=False)
+print(f"\n✓ Saved: 01_Annual_Rainfall_Totals.csv")
+
+# ========================================
+# TABLE 2: SEASONAL RAINFALL BY YEAR
+# ========================================
+print("\n" + "=" * 100)
+print("TABLE 2: SEASONAL RAINFALL BY YEAR (1991-2025) - SAMPLE")
+print("=" * 100)
+
+seasonal_annual = df_historical.groupby(['Year', 'Season'])['Precipitation_mm'].agg([
+    'sum', 'mean', 'std', 'min', 'max', 'count'
+]).round(2).reset_index()
+
+seasonal_annual.columns = ['Year', 'Season', 'Total_mm', 'Mean_Daily_mm', 'Std_mm', 'Min_Daily_mm', 'Max_Daily_mm', 'Days']
+
+print(seasonal_annual.head(30).to_string(index=False))
+seasonal_annual.to_csv(os.path.join(OUTPUT_DIR, '02_Seasonal_Rainfall_by_Year.csv'), index=False)
+print(f"\n✓ Saved: 02_Seasonal_Rainfall_by_Year.csv (Full 70 rows)")
+
+# ========================================
+# TABLE 3: SEASONAL STATISTICS SUMMARY
+# ========================================
+print("\n" + "=" * 100)
+print("TABLE 3: SEASONAL STATISTICS SUMMARY (1991-2025)")
+print("=" * 100)
+
+seasonal_stats = seasonal_annual.groupby('Season')['Total_mm'].describe().round(2)
+print(seasonal_stats)
+seasonal_stats.to_csv(os.path.join(OUTPUT_DIR, '03_Seasonal_Statistics_Summary.csv'))
+print(f"\n✓ Saved: 03_Seasonal_Statistics_Summary.csv")
+
+# ========================================
+# TABLE 4: DECADAL ANALYSIS
+# ========================================
+print("\n" + "=" * 100)
+print("TABLE 4: DECADAL RAINFALL ANALYSIS")
+print("=" * 100)
+
+def assign_decade(year):
+    """Assign decade label"""
+    if 1991 <= year <= 2000:
+        return '1991-2000'
+    elif 2001 <= year <= 2010:
+        return '2001-2010'
+    elif 2011 <= year <= 2020:
+        return '2011-2020'
+    else:
+        return '2021-2025'
+
+df_historical['Decade'] = df_historical['Year'].apply(assign_decade)
+
+decadal_analysis = df_historical.groupby(['Decade', 'Season'])['Precipitation_mm'].agg([
+    'sum', 'mean', 'std', 'count'
+]).round(2).reset_index()
+
+decadal_analysis.columns = ['Decade', 'Season', 'Total_mm', 'Mean_Daily_mm', 'Std_mm', 'Days']
+
+print(decadal_analysis.to_string(index=False))
+decadal_analysis.to_csv(os.path.join(OUTPUT_DIR, '04_Decadal_Analysis.csv'), index=False)
+print(f"\n✓ Saved: 04_Decadal_Analysis.csv")
+
+# ========================================
+# TABLE 5: ANNUAL RAINFALL STATISTICS
+# ========================================
+print("\n" + "=" * 100)
+print("TABLE 5: ANNUAL RAINFALL STATISTICS (1991-2025)")
+print("=" * 100)
+
+annual_stats_summary = pd.DataFrame({
+    'Statistic': ['Mean', 'Std Dev', 'Min', 'Max', 'Range', 'CV (%)', 'Median', 'Q1', 'Q3'],
+    'Value_mm': [
+        annual_totals['Annual_Total_mm'].mean(),
+        annual_totals['Annual_Total_mm'].std(),
+        annual_totals['Annual_Total_mm'].min(),
+        annual_totals['Annual_Total_mm'].max(),
+        annual_totals['Annual_Total_mm'].max() - annual_totals['Annual_Total_mm'].min(),
+        (annual_totals['Annual_Total_mm'].std() / annual_totals['Annual_Total_mm'].mean()) * 100,
+        annual_totals['Annual_Total_mm'].median(),
+        annual_totals['Annual_Total_mm'].quantile(0.25),
+        annual_totals['Annual_Total_mm'].quantile(0.75)
+    ]
+}).round(2)
+
+print(annual_stats_summary.to_string(index=False))
+annual_stats_summary.to_csv(os.path.join(OUTPUT_DIR, '05_Annual_Rainfall_Statistics.csv'), index=False)
+print(f"\n✓ Saved: 05_Annual_Rainfall_Statistics.csv")
+
+# %% ============================================================================
+# CELL 7: TREND ANALYSIS (1991-2025)
+# ============================================================================
+
+print("\n[STEP 5] TREND ANALYSIS (1991-2025)...")
+print("-" * 100)
+
+X = annual_totals['Year'].values.reshape(-1, 1)
+y = annual_totals['Annual_Total_mm'].values
+
+# LINEAR TREND
+print("\n[LINEAR TREND ANALYSIS]")
+
+lr_model = LinearRegression()
+lr_model.fit(X, y)
+y_pred_linear = lr_model.predict(X)
+
+r2_linear = r2_score(y, y_pred_linear)
+rmse_linear = np.sqrt(mean_squared_error(y, y_pred_linear))
+mae_linear = mean_absolute_error(y, y_pred_linear)
+slope_linear = lr_model.coef_[0]
+
+print(f"  Equation: Rainfall = {lr_model.intercept_:.2f} + {slope_linear:.4f} × Year")
+print(f"  Slope: {slope_linear:.4f} mm/year ({('INCREASING ↑' if slope_linear > 0 else 'DECREASING ↓')})")
+print(f"  R²: {r2_linear:.4f}, RMSE: {rmse_linear:.2f} mm, MAE: {mae_linear:.2f} mm")
+
+# POLYNOMIAL TREND
+print("\n[POLYNOMIAL TREND ANALYSIS - 2ND DEGREE]")
+
+poly_features = PolynomialFeatures(degree=2)
+X_poly = poly_features.fit_transform(X)
+
+poly_model = LinearRegression()
+poly_model.fit(X_poly, y)
+y_pred_poly = poly_model.predict(X_poly)
+
+r2_poly = r2_score(y, y_pred_poly)
+rmse_poly = np.sqrt(mean_squared_error(y, y_pred_poly))
+mae_poly = mean_absolute_error(y, y_pred_poly)
+
+print(f"  R²: {r2_poly:.4f}, RMSE: {rmse_poly:.2f} mm, MAE: {mae_poly:.2f} mm")
+
+# ========================================
+# TABLE 6: SEASONAL TREND ANALYSIS
+# ========================================
+print("\n" + "=" * 100)
+print("TABLE 6: SEASONAL TREND ANALYSIS (1991-2025)")
+print("=" * 100)
+
+seasonal_trends = []
+
+for season in ['Rainy Season', 'Dry Season']:
+    season_data = seasonal_annual[seasonal_annual['Season'] == season].copy()
+    
+    X_season = season_data['Year'].values.reshape(-1, 1)
+    y_season = season_data['Total_mm'].values
+    
+    model = LinearRegression()
+    model.fit(X_season, y_season)
+    y_pred_season = model.predict(X_season)
+    
+    r2 = r2_score(y_season, y_pred_season)
+    rmse = np.sqrt(mean_squared_error(y_season, y_pred_season))
+    
+    seasonal_trends.append({
+        'Season': season,
+        'Trend_mm/year': model.coef_[0],
+        'R²': r2,
+        'RMSE_mm': rmse,
+        'Mean_Total_mm': y_season.mean(),
+        'Std_mm': y_season.std(),
+        'Direction': 'INCREASING ↑' if model.coef_[0] > 0 else 'DECREASING ↓'
+    })
+
+seasonal_trends_df = pd.DataFrame(seasonal_trends).round(4)
+print(seasonal_trends_df.to_string(index=False))
+seasonal_trends_df.to_csv(os.path.join(OUTPUT_DIR, '06_Seasonal_Trend_Analysis.csv'), index=False)
+print(f"\n✓ Saved: 06_Seasonal_Trend_Analysis.csv")
+
+# %% ============================================================================
+# CELL 8: MACHINE LEARNING MODEL DEVELOPMENT
+# ============================================================================
+
+print("\n[STEP 6] MACHINE LEARNING MODEL DEVELOPMENT...")
+print("-" * 100)
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+print(f"\nTrain-Test Split: {len(X_train)} train, {len(X_test)} test")
+
+# RANDOM FOREST
+print("\n[Training Random Forest...]")
+
+rf_model = RandomForestRegressor(n_estimators=100, max_depth=15, random_state=42, n_jobs=-1)
+rf_model.fit(X_train, y_train)
+y_pred_rf = rf_model.predict(X_test)
+
+rf_r2 = r2_score(y_test, y_pred_rf)
+rf_rmse = np.sqrt(mean_squared_error(y_test, y_pred_rf))
+rf_mae = mean_absolute_error(y_test, y_pred_rf)
+
+print(f"  R²: {rf_r2:.4f}, RMSE: {rf_rmse:.2f} mm, MAE: {rf_mae:.2f} mm")
+
+# GRADIENT BOOSTING
+print("\n[Training Gradient Boosting...]")
+
+gb_model = GradientBoostingRegressor(n_estimators=100, max_depth=5, learning_rate=0.1, random_state=42)
+gb_model.fit(X_train, y_train)
+y_pred_gb = gb_model.predict(X_test)
+
+gb_r2 = r2_score(y_test, y_pred_gb)
+gb_rmse = np.sqrt(mean_squared_error(y_test, y_pred_gb))
+gb_mae = mean_absolute_error(y_test, y_pred_gb)
+
+print(f"  R²: {gb_r2:.4f}, RMSE: {gb_rmse:.2f} mm, MAE: {gb_mae:.2f} mm")
+
+# ========================================
+# TABLE 7: MODEL COMPARISON
+# ========================================
+print("\n" + "=" * 100)
+print("TABLE 7: MACHINE LEARNING MODEL COMPARISON")
+print("=" * 100)
+
+model_comparison = pd.DataFrame({
+    'Model': ['Linear Regression', 'Polynomial (2°)', 'Random Forest', 'Gradient Boosting'],
+    'R²': [r2_linear, r2_poly, rf_r2, gb_r2],
+    'RMSE_mm': [rmse_linear, rmse_poly, rf_rmse, gb_rmse],
+    'MAE_mm': [mae_linear, mae_poly, rf_mae, gb_mae]
+}).round(4)
+
+print(model_comparison.to_string(index=False))
+model_comparison.to_csv(os.path.join(OUTPUT_DIR, '07_Model_Comparison.csv'), index=False)
+print(f"\n✓ Saved: 07_Model_Comparison.csv")
+
+best_model = model_comparison.loc[model_comparison['R²'].idxmax()]
+print(f"\n✓ BEST MODEL: {best_model['Model']} (R² = {best_model['R²']:.4f})")
+
+# %% ============================================================================
+# CELL 9: FORECAST ANNUAL RAINFALL (2026-2050)
+# ============================================================================
+
+print("\n[STEP 7] FORECASTING ANNUAL RAINFALL (2026-2050)...")
+print("-" * 100)
+
+future_years = np.arange(FORECAST_START, FORECAST_END + 1).reshape(-1, 1)
+annual_forecast_values = gb_model.predict(future_years)
+
+forecast_df = pd.DataFrame({
+    'Year': future_years.flatten(),
+    'Forecast_Total_mm': annual_forecast_values,
+    'Lower_95%_CI': annual_forecast_values - (1.96 * gb_rmse),
+    'Upper_95%_CI': annual_forecast_values + (1.96 * gb_rmse)
+}).round(2)
+
+# ========================================
+# TABLE 8: ANNUAL FORECAST (2026-2050)
+# ========================================
+print("\n" + "=" * 100)
+print("TABLE 8: ANNUAL RAINFALL FORECAST (2026-2050)")
+print("=" * 100)
+
+print(forecast_df.to_string(index=False))
+forecast_df.to_csv(os.path.join(OUTPUT_DIR, '08_Annual_Forecast_2026-2050.csv'), index=False)
+print(f"\n✓ Saved: 08_Annual_Forecast_2026-2050.csv")
+
+# ========================================
+# TABLE 9: FORECAST STATISTICS
+# ========================================
+print("\n" + "=" * 100)
+print("TABLE 9: FORECAST STATISTICS (2026-2050)")
+print("=" * 100)
+
+forecast_stats_summary = pd.DataFrame({
+    'Statistic': ['Mean', 'Std Dev', 'Min', 'Max', 'Range', 'Change vs Historical'],
+    'Value_mm': [
+        forecast_df['Forecast_Total_mm'].mean(),
+        forecast_df['Forecast_Total_mm'].std(),
+        forecast_df['Forecast_Total_mm'].min(),
+        forecast_df['Forecast_Total_mm'].max(),
+        forecast_df['Forecast_Total_mm'].max() - forecast_df['Forecast_Total_mm'].min(),
+        forecast_df['Forecast_Total_mm'].mean() - annual_totals['Annual_Total_mm'].mean()
+    ]
+}).round(2)
+
+print(forecast_stats_summary.to_string(index=False))
+forecast_stats_summary.to_csv(os.path.join(OUTPUT_DIR, '09_Forecast_Statistics.csv'), index=False)
+print(f"\n✓ Saved: 09_Forecast_Statistics.csv")
+
+# %% ============================================================================
+# CELL 10: SEASONAL FORECAST (2026-2050)
+# ============================================================================
+
+print("\n[STEP 8] SEASONAL RAINFALL FORECAST (2026-2050)...")
+print("-" * 100)
+
+# Historical seasonal proportions
+hist_rainy_pct = seasonal_annual[seasonal_annual['Season'] == 'Rainy Season']['Total_mm'].sum() / df_historical['Precipitation_mm'].sum()
+hist_dry_pct = seasonal_annual[seasonal_annual['Season'] == 'Dry Season']['Total_mm'].sum() / df_historical['Precipitation_mm'].sum()
+
+print(f"\nHistorical Seasonal Proportions:")
+print(f"  Rainy Season (May-Oct): {hist_rainy_pct*100:.2f}%")
+print(f"  Dry Season (Nov-Apr): {hist_dry_pct*100:.2f}%")
+
+# Allocate to seasons
+rainy_days, dry_days = 184, 181
+
+forecast_df['Rainy_Season_Total_mm'] = (forecast_df['Forecast_Total_mm'] * hist_rainy_pct).round(2)
+forecast_df['Dry_Season_Total_mm'] = (forecast_df['Forecast_Total_mm'] * hist_dry_pct).round(2)
+forecast_df['Rainy_Season_Daily_Mean_mm'] = (forecast_df['Rainy_Season_Total_mm'] / rainy_days).round(2)
+forecast_df['Dry_Season_Daily_Mean_mm'] = (forecast_df['Dry_Season_Total_mm'] / dry_days).round(2)
+
+# ========================================
+# TABLE 10: SEASONAL FORECAST (2026-2050)
+# ========================================
+print("\n" + "=" * 100)
+print("TABLE 10: SEASONAL RAINFALL FORECAST (2026-2050)")
+print("=" * 100)
+
+seasonal_forecast_display = forecast_df[[
+    'Year', 'Rainy_Season_Total_mm', 'Rainy_Season_Daily_Mean_mm',
+    'Dry_Season_Total_mm', 'Dry_Season_Daily_Mean_mm'
+]].copy()
+
+print(seasonal_forecast_display.to_string(index=False))
+seasonal_forecast_display.to_csv(os.path.join(OUTPUT_DIR, '10_Seasonal_Forecast_2026-2050.csv'), index=False)
+print(f"\n✓ Saved: 10_Seasonal_Forecast_2026-2050.csv")
+
+# ========================================
+# TABLE 11: SEASONAL FORECAST STATISTICS
+# ========================================
+print("\n" + "=" * 100)
+print("TABLE 11: SEASONAL FORECAST STATISTICS (2026-2050)")
+print("=" * 100)
+
+seasonal_forecast_stats = pd.DataFrame({
+    'Season': ['Rainy Season (May-Oct)', 'Dry Season (Nov-Apr)'],
+    'Mean_Total_mm': [forecast_df['Rainy_Season_Total_mm'].mean(), forecast_df['Dry_Season_Total_mm'].mean()],
+    'Std_mm': [forecast_df['Rainy_Season_Total_mm'].std(), forecast_df['Dry_Season_Total_mm'].std()],
+    'Min_mm': [forecast_df['Rainy_Season_Total_mm'].min(), forecast_df['Dry_Season_Total_mm'].min()],
+    'Max_mm': [forecast_df['Rainy_Season_Total_mm'].max(), forecast_df['Dry_Season_Total_mm'].max()],
+    'Mean_Daily_mm': [forecast_df['Rainy_Season_Daily_Mean_mm'].mean(), forecast_df['Dry_Season_Daily_Mean_mm'].mean()]
+}).round(2)
+
+print(seasonal_forecast_stats.to_string(index=False))
+seasonal_forecast_stats.to_csv(os.path.join(OUTPUT_DIR, '11_Seasonal_Forecast_Statistics.csv'), index=False)
+print(f"\n✓ Saved: 11_Seasonal_Forecast_Statistics.csv")
+
+# %% ============================================================================
+# CELL 11: HISTORICAL vs FORECAST COMPARISON
+# ============================================================================
+
+print("\n" + "=" * 100)
+print("TABLE 12: HISTORICAL vs FORECAST COMPARISON (DECADAL AVERAGES)")
+print("=" * 100)
+
+# Historical
+h1 = annual_totals[(annual_totals['Year'] >= 1991) & (annual_totals['Year'] <= 2000)]['Annual_Total_mm'].mean()
+h2 = annual_totals[(annual_totals['Year'] >= 2001) & (annual_totals['Year'] <= 2010)]['Annual_Total_mm'].mean()
+h3 = annual_totals[(annual_totals['Year'] >= 2011) & (annual_totals['Year'] <= 2020)]['Annual_Total_mm'].mean()
+h4 = annual_totals[(annual_totals['Year'] >= 2021) & (annual_totals['Year'] <= 2025)]['Annual_Total_mm'].mean()
+
+# Forecast
+f1 = forecast_df[(forecast_df['Year'] >= 2026) & (forecast_df['Year'] <= 2035)]['Forecast_Total_mm'].mean()
+f2 = forecast_df[(forecast_df['Year'] >= 2036) & (forecast_df['Year'] <= 2045)]['Forecast_Total_mm'].mean()
+f3 = forecast_df[(forecast_df['Year'] >= 2046) & (forecast_df['Year'] <= 2050)]['Forecast_Total_mm'].mean()
+
+comparison_df = pd.DataFrame({
+    'Period': ['1991-2000', '2001-2010', '2011-2020', '2021-2025', '2026-2035', '2036-2045', '2046-2050'],
+    'Type': ['Historical', 'Historical', 'Historical', 'Historical', 'Forecast', 'Forecast', 'Forecast'],
+    'Avg_Annual_Rainfall_mm': [h1, h2, h3, h4, f1, f2, f3]
+}).round(2)
+
+print(comparison_df.to_string(index=False))
+comparison_df.to_csv(os.path.join(OUTPUT_DIR, '12_Historical_Forecast_Comparison.csv'), index=False)
+print(f"\n✓ Saved: 12_Historical_Forecast_Comparison.csv")
+
+# %% ============================================================================
+# CELL 12: ANOMALY ANALYSIS
+# ============================================================================
+
+print("\n[STEP 9] RAINFALL ANOMALY ANALYSIS (1991-2025)...")
+print("-" * 100)
+
+mean_annual = annual_totals['Annual_Total_mm'].mean()
+std_annual = annual_totals['Annual_Total_mm'].std()
+
+annual_totals['Anomaly_mm'] = annual_totals['Annual_Total_mm'] - mean_annual
+annual_totals['Std_Anomaly'] = (annual_totals['Annual_Total_mm'] - mean_annual) / std_annual
+annual_totals['Anomaly_Pct'] = (annual_totals['Anomaly_mm'] / mean_annual) * 100
+
+def classify_anomaly(std_val):
+    if std_val > 1:
+        return 'Very Wet'
+    elif std_val > 0.5:
+        return 'Wet'
+    elif std_val > -0.5:
+        return 'Normal'
+    elif std_val > -1:
+        return 'Dry'
+    else:
+        return 'Very Dry'
+
+annual_totals['Class'] = annual_totals['Std_Anomaly'].apply(classify_anomaly)
+
+# ========================================
+# TABLE 13: ANOMALY CLASSIFICATION
+# ========================================
+print("\n" + "=" * 100)
+print("TABLE 13: RAINFALL ANOMALY CLASSIFICATION (1991-2025)")
+print("=" * 100)
+
+anomaly_display = annual_totals[['Year', 'Annual_Total_mm', 'Anomaly_mm', 'Anomaly_Pct', 'Class']].copy()
+anomaly_sorted = anomaly_display.sort_values('Anomaly_mm', ascending=False)
+
+print(anomaly_sorted.to_string(index=False))
+annual_totals.to_csv(os.path.join(OUTPUT_DIR, '13_Anomaly_Classification.csv'), index=False)
+print(f"\n✓ Saved: 13_Anomaly_Classification.csv")
+
+print("\n[ANOMALY SUMMARY]")
+print(annual_totals['Class'].value_counts().sort_index())
+
+# %% ============================================================================
+# CELL 13: VISUALIZATIONS - FIGURE 1
+# ============================================================================
+
+print("\n[STEP 10] GENERATING VISUALIZATIONS...")
+print("-" * 100)
+
+print("\n[Creating Figure 1: Historical Rainfall Trends...]")
+
+fig, axes = plt.subplots(2, 2, figsize=(18, 12))
+fig.suptitle('Figure 1: Historical Rainfall Trends Analysis (1991-2025)', fontsize=16, fontweight='bold')
+
+# Plot 1a
+ax = axes[0, 0]
+ax.scatter(annual_totals['Year'], annual_totals['Annual_Total_mm'], s=100, alpha=0.6, color='steelblue', edgecolor='navy')
+ax.plot(annual_totals['Year'], y_pred_linear, 'r--', linewidth=3, label=f'Linear (R²={r2_linear:.3f})', alpha=0.8)
+ax.plot(annual_totals['Year'], y_pred_poly, 'g-', linewidth=3, label=f'Polynomial (R²={r2_poly:.3f})', alpha=0.8)
+ax.axhline(y=mean_annual, color='orange', linestyle=':', linewidth=2.5, label='35-Year Mean', alpha=0.7)
+ax.fill_between(annual_totals['Year'], mean_annual - std_annual, mean_annual + std_annual, alpha=0.1, color='gray')
+ax.set_xlabel('Year', fontsize=11, fontweight='bold')
+ax.set_ylabel('Annual Rainfall (mm)', fontsize=11, fontweight='bold')
+ax.set_title('(a) Annual Rainfall with Trends', fontsize=12, fontweight='bold')
+ax.legend(fontsize=10)
+ax.grid(True, alpha=0.3)
+
+# Plot 1b
+ax = axes[0, 1]
+rainy = seasonal_annual[seasonal_annual['Season'] == 'Rainy Season']
+dry = seasonal_annual[seasonal_annual['Season'] == 'Dry Season']
+ax.plot(rainy['Year'], rainy['Total_mm'], 'o-', color='green', linewidth=2.5, markersize=8, label='Rainy', alpha=0.8)
+ax.plot(dry['Year'], dry['Total_mm'], 's-', color='orange', linewidth=2.5, markersize=8, label='Dry', alpha=0.8)
+ax.set_xlabel('Year', fontsize=11, fontweight='bold')
+ax.set_ylabel('Seasonal Total (mm)', fontsize=11, fontweight='bold')
+ax.set_title('(b) Seasonal Time Series', fontsize=12, fontweight='bold')
+ax.legend(fontsize=10)
+ax.grid(True, alpha=0.3)
+
+# Plot 1c
+ax = axes[1, 0]
+bp = ax.boxplot([rainy['Total_mm'].values, dry['Total_mm'].values], 
+                  labels=['Rainy (May-Oct)', 'Dry (Nov-Apr)'], patch_artist=True)
+for patch, color in zip(bp['boxes'], ['lightgreen', 'lightyellow']):
+    patch.set_facecolor(color)
+ax.set_ylabel('Total (mm)', fontsize=11, fontweight='bold')
+ax.set_title('(c) Seasonal Distribution', fontsize=12, fontweight='bold')
+ax.grid(True, alpha=0.3, axis='y')
+
+# Plot 1d
+ax = axes[1, 1]
+decades = ['1991-2000', '2001-2010', '2011-2020', '2021-2025']
+r_means = [rainy[rainy['Year'] < 2001]['Total_mm'].mean(), rainy[(rainy['Year'] >= 2001) & (rainy['Year'] < 2011)]['Total_mm'].mean(),
+           rainy[(rainy['Year'] >= 2011) & (rainy['Year'] < 2021)]['Total_mm'].mean(), rainy[rainy['Year'] >= 2021]['Total_mm'].mean()]
+d_means = [dry[dry['Year'] < 2001]['Total_mm'].mean(), dry[(dry['Year'] >= 2001) & (dry['Year'] < 2011)]['Total_mm'].mean(),
+           dry[(dry['Year'] >= 2011) & (dry['Year'] < 2021)]['Total_mm'].mean(), dry[dry['Year'] >= 2021]['Total_mm'].mean()]
+
+x = np.arange(len(decades))
+width = 0.35
+ax.bar(x - width/2, r_means, width, label='Rainy', color='green', alpha=0.7, edgecolor='darkgreen')
+ax.bar(x + width/2, d_means, width, label='Dry', color='orange', alpha=0.7, edgecolor='darkorange')
+ax.set_ylabel('Average (mm)', fontsize=11, fontweight='bold')
+ax.set_title('(d) Decadal Comparison', fontsize=12, fontweight='bold')
+ax.set_xticks(x)
+ax.set_xticklabels(decades, rotation=45, ha='right')
+ax.legend(fontsize=10)
+ax.grid(True, alpha=0.3, axis='y')
+
+plt.tight_layout()
+plt.savefig(os.path.join(FIG_DIR, 'Fig1_Historical_Trends.png'), dpi=300, bbox_inches='tight')
+print(f"✓ Saved: Fig1_Historical_Trends.png")
+plt.show()
+
+# %% ============================================================================
+# CELL 14: VISUALIZATIONS - FIGURE 2
+# ============================================================================
+
+print("\n[Creating Figure 2: Forecast Analysis...]")
+
+fig, axes = plt.subplots(2, 2, figsize=(18, 12))
+fig.suptitle('Figure 2: Rainfall Forecast Analysis (2026-2050)', fontsize=16, fontweight='bold')
+
+# Plot 2a
+ax = axes[0, 0]
+ax.scatter(annual_totals['Year'], annual_totals['Annual_Total_mm'], s=100, alpha=0.7, color='steelblue', edgecolor='navy', label='Observed')
+ax.plot(annual_totals['Year'], y_pred_poly, 'b-', linewidth=2.5, label='Historical Fit', alpha=0.8)
+ax.plot(forecast_df['Year'], forecast_df['Forecast_Total_mm'], 'ro-', linewidth=2.5, markersize=7, label='Forecast')
+ax.fill_between(forecast_df['Year'], forecast_df['Lower_95%_CI'], forecast_df['Upper_95%_CI'], alpha=0.25, color='red', label='95% CI')
+ax.axvline(x=2025.5, color='gray', linestyle='--', linewidth=2.5, alpha=0.6)
+ax.set_xlabel('Year', fontsize=11, fontweight='bold')
+ax.set_ylabel('Annual Rainfall (mm)', fontsize=11, fontweight='bold')
+ax.set_title('(a) Historical & Forecast', fontsize=12, fontweight='bold')
+ax.legend(fontsize=10)
+ax.grid(True, alpha=0.3)
+
+# Plot 2b
+ax = axes[0, 1]
+ax.plot(forecast_df['Year'], forecast_df['Rainy_Season_Total_mm'], 'o-', color='darkgreen', linewidth=2.5, markersize=7, label='Rainy')
+ax.plot(forecast_df['Year'], forecast_df['Dry_Season_Total_mm'], 's-', color='darkorange', linewidth=2.5, markersize=7, label='Dry')
+ax.set_xlabel('Year', fontsize=11, fontweight='bold')
+ax.set_ylabel('Seasonal Total (mm)', fontsize=11, fontweight='bold')
+ax.set_title('(b) Seasonal Forecast', fontsize=12, fontweight='bold')
+ax.legend(fontsize=10)
+ax.grid(True, alpha=0.3)
+
+# Plot 2c
+ax = axes[1, 0]
+periods = ['1991-00', '2001-10', '2011-20', '2021-25', '2026-35', '2036-45', '2046-50']
+values = [h1, h2, h3, h4, f1, f2, f3]
+colors = ['steelblue']*4 + ['salmon']*3
+bars = ax.bar(periods, values, color=colors, alpha=0.8, edgecolor='black')
+ax.axvline(x=3.5, color='red', linestyle='--', linewidth=2.5, alpha=0.7)
+ax.set_ylabel('Avg Annual Rainfall (mm)', fontsize=11, fontweight='bold')
+ax.set_title('(c) Decadal Average Comparison', fontsize=12, fontweight='bold')
+ax.grid(True, alpha=0.3, axis='y')
+for bar in bars:
+    height = bar.get_height()
+    ax.text(bar.get_x() + bar.get_width()/2., height, f'{height:.0f}', ha='center', va='bottom', fontsize=9, fontweight='bold')
+
+# Plot 2d
+ax = axes[1, 1]
+ax.hist(annual_totals['Annual_Total_mm'], bins=15, alpha=0.6, label='Historical', color='steelblue', edgecolor='navy')
+ax.hist(forecast_df['Forecast_Total_mm'], bins=15, alpha=0.6, label='Forecast', color='salmon', edgecolor='darkred')
+ax.axvline(annual_totals['Annual_Total_mm'].mean(), color='blue', linestyle='--', linewidth=3, label=f'Hist Mean: {annual_totals["Annual_Total_mm"].mean():.0f}')
+ax.axvline(forecast_df['Forecast_Total_mm'].mean(), color='red', linestyle='--', linewidth=3, label=f'Forecast Mean: {forecast_df["Forecast_Total_mm"].mean():.0f}')
+ax.set_xlabel('Annual Rainfall (mm)', fontsize=11, fontweight='bold')
+ax.set_ylabel('Frequency', fontsize=11, fontweight='bold')
+ax.set_title('(d) Distribution Comparison', fontsize=12, fontweight='bold')
+ax.legend(fontsize=10)
+ax.grid(True, alpha=0.3, axis='y')
+
+plt.tight_layout()
+plt.savefig(os.path.join(FIG_DIR, 'Fig2_Forecast_Analysis.png'), dpi=300, bbox_inches='tight')
+print(f"✓ Saved: Fig2_Forecast_Analysis.png")
+plt.show()
+
+# %% ============================================================================
+# CELL 15: VISUALIZATIONS - FIGURE 3
+# ============================================================================
+
+print("\n[Creating Figure 3: Anomaly Analysis...]")
+
+fig, axes = plt.subplots(2, 1, figsize=(18, 10))
+fig.suptitle('Figure 3: Rainfall Anomaly Analysis (1991-2025)', fontsize=16, fontweight='bold')
+
+# Plot 3a
+ax = axes[0]
+colors = ['green' if x > 0 else 'red' for x in annual_totals['Anomaly_mm']]
+ax.bar(annual_totals['Year'], annual_totals['Anomaly_mm'], color=colors, alpha=0.7, edgecolor='black')
+ax.axhline(y=0, color='black', linestyle='-', linewidth=2)
+ax.axhline(y=std_annual, color='gray', linestyle='--', linewidth=2, alpha=0.6, label='+1σ')
+ax.axhline(y=-std_annual, color='gray', linestyle='--', linewidth=2, alpha=0.6, label='-1σ')
+ax.fill_between(annual_totals['Year'], -std_annual, std_annual, alpha=0.1, color='gray')
+ax.set_xlabel('Year', fontsize=11, fontweight='bold')
+ax.set_ylabel('Anomaly (mm)', fontsize=11, fontweight='bold')
+ax.set_title('(a) Annual Rainfall Anomalies', fontsize=12, fontweight='bold')
+ax.legend(fontsize=10)
+ax.grid(True, alpha=0.3, axis='y')
+
+# Plot 3b
+ax = axes[1]
+colors_std = ['darkgreen' if x > 1 else 'lightgreen' if x > 0.5 else 'lightcoral' if x > -0.5 else 'red' if x > -1 else 'darkred' for x in annual_totals['Std_Anomaly']]
+ax.bar(annual_totals['Year'], annual_totals['Std_Anomaly'], color=colors_std, alpha=0.8, edgecolor='black')
+ax.axhline(y=0, color='black', linestyle='-', linewidth=2)
+ax.axhline(y=1, color='gray', linestyle='--', linewidth=1.5, alpha=0.6)
+ax.axhline(y=-1, color='gray', linestyle='--', linewidth=1.5, alpha=0.6)
+ax.fill_between(annual_totals['Year'], -1, 1, alpha=0.1, color='gray')
+ax.set_xlabel('Year', fontsize=11, fontweight='bold')
+ax.set_ylabel('Std Anomaly (σ)', fontsize=11, fontweight='bold')
+ax.set_title('(b) Standardized Anomalies', fontsize=12, fontweight='bold')
+ax.grid(True, alpha=0.3, axis='y')
+ax.set_ylim(-3, 3)
+
+# Legend
+from matplotlib.patches import Patch
+legend_elements = [
+    Patch(facecolor='darkgreen', alpha=0.8, label='Very Wet'),
+    Patch(facecolor='lightgreen', alpha=0.8, label='Wet'),
+    Patch(facecolor='lightcoral', alpha=0.8, label='Normal'),
+    Patch(facecolor='red', alpha=0.8, label='Dry'),
+    Patch(facecolor='darkred', alpha=0.8, label='Very Dry')
+]
+ax.legend(handles=legend_elements, loc='upper left', fontsize=10)
+
+plt.tight_layout()
+plt.savefig(os.path.join(FIG_DIR, 'Fig3_Anomaly_Analysis.png'), dpi=300, bbox_inches='tight')
+print(f"✓ Saved: Fig3_Anomaly_Analysis.png")
+plt.show()
+
+# %% ============================================================================
+# CELL 16: VISUALIZATIONS - FIGURE 4 (SPATIAL)
+# ============================================================================
+
+print("\n[Creating Figure 4: Spatial Representation...]")
+
+try:
+    gdf = gpd.read_file(SHAPEFILE_PATH)
+    print(f"✓ Shapefile loaded: {SHAPEFILE}")
+    
+    fig, axes = plt.subplots(1, 2, figsize=(16, 8))
+    fig.suptitle('Figure 4: Freetown Western Area - Spatial Rainfall Representation', fontsize=14, fontweight='bold')
+    
+    freetown_lon, freetown_lat = -13.2317, 8.4657
+    
+    # Historical
+    ax = axes[0]
+    gdf.plot(ax=ax, alpha=0.5, edgecolor='black', facecolor='lightblue')
+    ax.scatter([freetown_lon], [freetown_lat], s=800, c='red', marker='*', edgecolor='darkred', linewidth=2, label='Freetown', zorder=5)
+    ax.set_xlabel('Longitude', fontsize=11, fontweight='bold')
+    ax.set_ylabel('Latitude', fontsize=11, fontweight='bold')
+    ax.set_title(f'(a) Historical Mean (1991-2025)\n{annual_totals["Annual_Total_mm"].mean():.0f} mm', fontsize=12, fontweight='bold')
+    ax.legend(fontsize=10)
+    ax.grid(True, alpha=0.3)
+    
+    # Forecast
+    ax = axes[1]
+    gdf.plot(ax=ax, alpha=0.5, edgecolor='black', facecolor='lightgreen')
+    ax.scatter([freetown_lon], [freetown_lat], s=800, c='green', marker='*', edgecolor='darkgreen', linewidth=2, label='Freetown', zorder=5)
+    ax.set_xlabel('Longitude', fontsize=11, fontweight='bold')
+    ax.set_ylabel('Latitude', fontsize=11, fontweight='bold')
+    ax.set_title(f'(b) Forecast Mean (2026-2050)\n{forecast_df["Forecast_Total_mm"].mean():.0f} mm', fontsize=12, fontweight='bold')
+    ax.legend(fontsize=10)
+    ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(FIG_DIR, 'Fig4_Spatial_Representation.png'), dpi=300, bbox_inches='tight')
+    print(f"✓ Saved: Fig4_Spatial_Representation.png")
+    plt.show()
+    
+except Exception as e:
+    print(f"⚠ Shapefile loading warning: {str(e)}")
+
+# %% ============================================================================
+# CELL 17: FINAL SUMMARY REPORT
+# ============================================================================
+
+print("\n" + "=" * 100)
+print("ANALYSIS COMPLETE - FINAL SUMMARY REPORT")
+print("=" * 100)
+
+print("\n[KEY FINDINGS]")
+print(f"\n1. HISTORICAL ANALYSIS (1991-2025) - 35 YEARS:")
+print(f"   • Mean Annual Rainfall: {annual_totals['Annual_Total_mm'].mean():.2f} mm")
+print(f"   • Std Dev: {annual_totals['Annual_Total_mm'].std():.2f} mm")
+print(f"   • Range: {annual_totals['Annual_Total_mm'].min():.2f} - {annual_totals['Annual_Total_mm'].max():.2f} mm")
+print(f"   • Linear Trend: {slope_linear:.4f} mm/year ({('INCREASING ↑' if slope_linear > 0 else 'DECREASING ↓')})")
+print(f"   • Trend Model R²: {r2_linear:.4f}")
+
+print(f"\n2. SEASONAL PATTERNS (1991-2025):")
+for _, row in seasonal_trends_df.iterrows():
+    print(f"   • {row['Season']}:")
+    print(f"     - Mean Total: {row['Mean_Total_mm']:.2f} mm")
+    print(f"     - Trend: {row['Trend_mm/year']:.4f} mm/year ({row['Direction']})")
+    print(f"     - R² Fit: {row['R²']:.4f}")
+
+print(f"\n3. MACHINE LEARNING MODEL PERFORMANCE:")
+print(f"   • Best Model: {best_model['Model']}")
+print(f"   • R² Score: {best_model['R²']:.4f}")
+print(f"   • RMSE: {best_model['RMSE_mm']:.2f} mm")
+print(f"   • MAE: {best_model['MAE_mm']:.2f} mm")
+
+print(f"\n4. FORECAST SUMMARY (2026-2050):")
+print(f"   • Forecasted Mean: {forecast_df['Forecast_Total_mm'].mean():.2f} mm")
+print(f"   • Change vs Historical: {forecast_df['Forecast_Total_mm'].mean() - annual_totals['Annual_Total_mm'].mean():+.2f} mm ({((forecast_df['Forecast_Total_mm'].mean() - annual_totals['Annual_Total_mm'].mean()) / annual_totals['Annual_Total_mm'].mean() * 100):+.2f}%)")
+print(f"   • Forecast Range: {forecast_df['Forecast_Total_mm'].min():.2f} - {forecast_df['Forecast_Total_mm'].max():.2f} mm")
+print(f"   • 95% CI Width: ±{1.96 * gb_rmse:.2f} mm")
+
+print(f"\n5. SEASONAL FORECAST (2026-2050):")
+print(f"   • Rainy Season (May-Oct): {forecast_df['Rainy_Season_Total_mm'].mean():.2f} mm ({forecast_df['Rainy_Season_Daily_Mean_mm'].mean():.2f} mm/day)")
+print(f"   • Dry Season (Nov-Apr): {forecast_df['Dry_Season_Total_mm'].mean():.2f} mm ({forecast_df['Dry_Season_Daily_Mean_mm'].mean():.2f} mm/day)")
+
+print(f"\n6. ANOMALY STATISTICS (1991-2025):")
+print(f"   • Very Wet Years: {(annual_totals['Class'] == 'Very Wet').sum()}")
+print(f"   • Wet Years: {(annual_totals['Class'] == 'Wet').sum()}")
+print(f"   • Normal Years: {(annual_totals['Class'] == 'Normal').sum()}")
+print(f"   • Dry Years: {(annual_totals['Class'] == 'Dry').sum()}")
+print(f"   • Very Dry Years: {(annual_totals['Class'] == 'Very Dry').sum()}")
+
+print(f"\n7. OUTPUT FILES GENERATED:")
+print(f"   • Tables (CSV): 13 files")
+print(f"   • Figures (PNG): 4 high-resolution figures (300 DPI)")
+print(f"   • Location: {OUTPUT_DIR}")
+
+print("\n" + "=" * 100)
+print(f"ANALYSIS COMPLETED: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+print("=" * 100)
+
+print("\n✓ ALL ANALYSIS COMPLETE AND FILES SAVED!")
